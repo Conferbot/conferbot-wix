@@ -1,0 +1,20 @@
+<!-- Conferbot embedded-script template for the Wix Dev Center.
+     Paste this into your app's Embedded Script component (Dev Center >
+     your app > Components > Embedded Script). The {{botId}} and
+     {{embedType}} placeholders are filled per site by the app backend
+     via the Embed Script API on every settings save. -->
+<script type="text/javascript">
+  (function (d, s, id) {
+    var js, el = d.getElementsByTagName(s)[0];
+    if (d.getElementById(id)) return;
+    js = d.createElement(s);
+    js.async = true;
+    js.src = 'https://cdn.conferbot.com/dist/v1/widget.min.js';
+    js.id = id;
+    js.charset = 'UTF-8';
+    if (el && el.parentNode) { el.parentNode.insertBefore(js, el); } else { d.head.appendChild(js); }
+    js.onload = function () {
+      window.ConferbotWidget('{{botId}}', '{{embedType}}', { customData: { platform: 'wix' } });
+    };
+  })(document, 'script', 'conferbot-js');
+</script>
