@@ -51,6 +51,28 @@ async function exchangeCodeForTokens({ code, cfg }) {
   return data;
 }
 
+/** A fresh access token from the refresh token (Wix access tokens last minutes). */
+async function refreshTokens({ refreshToken, cfg }) {
+  const res = await fetch(`${cfg.apiBase}/oauth/access`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'refresh_token',
+      client_id: cfg.appId,
+      client_secret: cfg.appSecret,
+      refresh_token: refreshToken,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`token refresh failed: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data.access_token) {
+    throw new Error('token refresh returned no access_token');
+  }
+  return data;
+}
+
 /**
  * Pushes the per-site embedded-script parameters (the dev-center script
  * template contains {{botId}}/{{embedType}} placeholders).
@@ -65,9 +87,11 @@ async function embedScript({ accessToken, parameters, cfg }) {
     body: JSON.stringify({ properties: { parameters } }),
   });
   if (!res.ok) {
-    throw new Error(`embed script failed: HTTP ${res.status}`);
+    const err = new Error(`embed script failed: HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
 
-module.exports = { verifyInstance, exchangeCodeForTokens, embedScript };
+module.exports = { verifyInstance, exchangeCodeForTokens, refreshTokens, embedScript };
