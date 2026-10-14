@@ -5,6 +5,8 @@
      via the Embed Script API on every settings save. -->
 <script type="text/javascript">
   (function (d, s, id) {
+    // Chat turned off (or not set up yet): the backend sends an empty bot ID.
+    if (!/^[a-f0-9]{24}$/i.test('{{botId}}')) return;
     var js, el = d.getElementsByTagName(s)[0];
     if (d.getElementById(id)) return;
     js = d.createElement(s);
