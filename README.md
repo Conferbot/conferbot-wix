@@ -26,7 +26,8 @@ merchant saves settings (/app -> /app/save)
        { customData: { platform: "wix" } })
 ```
 
-The settings page accepts either a signed `?instance=` token (production, HMAC-verified with the app secret) or a bare `?instanceId=` (draft/dev). The only merchant-facing setting is the **Chatbot ID** (bare ID, full snippet, or URL - auto-extracted), with a one-click **demo bot** (`691c970890527a0468f9b2c9`) that works without a Conferbot account.
+The settings page opens only with Wix's signed `?instance=` token (HMAC-verified with the app secret) or the short-lived token from the install, and every save carries a token signed with the app secret; a bare `?instanceId=` is refused. Expired Wix access tokens are refreshed with the stored refresh token, and the embedded script does nothing while the chat is switched off. Everything visitors see is set per bot in the Conferbot dashboard and delivered at runtime, with nothing to configure in the store: flows and AI agents, live chat with handover to your team (queue position, leave a message when nobody is free, read receipts, file sharing, post-chat rating), the home screen, themes and dark mode, colours, launcher and mascot, greetings, languages and disabled URLs.
+ The only merchant-facing setting is the **Chatbot ID** (bare ID, full snippet, or URL - auto-extracted), with a one-click **demo bot** (`691c970890527a0468f9b2c9`) that works without a Conferbot account.
 
 ## Project layout
 
