@@ -27,7 +27,7 @@ const DEMO_ID = '691c970890527a0468f9b2c9';
 let mockWix;
 let appServer;
 let appUrl;
-const mockState = { tokenRequests: [], embedCalls: [] };
+const mockState = { tokenRequests: [], embedCalls: [] , validToken: 'wix-mock-token' };
 
 function makeInstanceToken(payload, secret) {
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -42,12 +42,16 @@ before(async () => {
     req.on('end', () => {
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'POST' && url.pathname === '/oauth/access') {
-        mockState.tokenRequests.push(JSON.parse(body));
+        const reqBody = JSON.parse(body);
+        mockState.tokenRequests.push(reqBody);
         res.setHeader('Content-Type', 'application/json');
+        if (reqBody.grant_type === 'refresh_token') {
+          return res.end(JSON.stringify({ access_token: mockState.validToken, refresh_token: 'wix-mock-refresh-2' }));
+        }
         return res.end(JSON.stringify({ access_token: 'wix-mock-token', refresh_token: 'wix-mock-refresh' }));
       }
       if (req.method === 'POST' && url.pathname === '/apps/v1/scripts') {
-        if (req.headers.authorization !== 'wix-mock-token') {
+        if (req.headers.authorization !== mockState.validToken) {
           res.statusCode = 401;
           return res.end('{}');
         }
@@ -125,7 +129,7 @@ test('step 1: /auth/start bounces to the wix installer with app id and redirect'
 test('step 2: callback exchanges the code and stores tokens', async () => {
   const res = await fetch(`${appUrl}/auth/callback?code=grant-7&instanceId=${INSTANCE_ID}`, { redirect: 'manual' });
   assert.strictEqual(res.status, 302);
-  assert.strictEqual(res.headers.get('location'), `/app?instanceId=${INSTANCE_ID}`);
+  assert.ok(res.headers.get('location').startsWith(`/app?instanceId=${INSTANCE_ID}&session=`));
   assert.deepStrictEqual(mockState.tokenRequests[0], {
     grant_type: 'authorization_code', client_id: APP_ID, client_secret: APP_SECRET, code: 'grant-7',
   });
@@ -136,17 +140,34 @@ test('step 2b: callback rejects missing code or bad instance id', async () => {
   assert.strictEqual((await fetch(`${appUrl}/auth/callback?code=x&instanceId=../evil`, { redirect: 'manual' })).status, 400);
 });
 
-test('step 3: settings page renders via bare id and via signed instance token', async () => {
-  const bare = await (await fetch(`${appUrl}/app?instanceId=${INSTANCE_ID}`)).text();
-  assert.ok(bare.includes('Paste your Chatbot ID'));
-  assert.ok(bare.includes(`data-demo-id="${DEMO_ID}"`));
+let formToken; // the settings page's signed form token
 
+test('step 3: settings page opens only via the signed instance token', async () => {
   const token = makeInstanceToken({ instanceId: INSTANCE_ID }, APP_SECRET);
   const signed = await fetch(`${appUrl}/app?instance=${encodeURIComponent(token)}`);
   assert.strictEqual(signed.status, 200);
+  const html = await signed.text();
+  assert.ok(html.includes('Paste your Chatbot ID'));
+  assert.ok(html.includes(`data-demo-id="${DEMO_ID}"`));
+  formToken = html.match(/name="token" value="([^"]+)"/)[1];
 
-  const forged = await fetch(`${appUrl}/app?instance=abc.def`);
-  assert.strictEqual(forged.status, 403);
+  // A bare ?instanceId= (the old hole) and a forged instance are refused.
+  assert.strictEqual((await fetch(`${appUrl}/app?instanceId=${INSTANCE_ID}`)).status, 401);
+  assert.strictEqual((await fetch(`${appUrl}/app?instance=abc.def`)).status, 403);
+});
+
+test('step 3b: saving without the page token, or with another site\'s, is refused', async () => {
+  const session = require('../src/session');
+  const post = (fields) => fetch(`${appUrl}/app/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ instanceId: INSTANCE_ID, botId: 'aaaaaaaaaaaaaaaaaaaaaaaa', enabled: '1', ...fields }),
+    redirect: 'manual',
+  });
+  assert.strictEqual((await post({})).status, 401);
+  assert.strictEqual((await post({ token: session.issueToken('other-site', APP_SECRET) })).status, 401);
+  assert.strictEqual((await post({ token: session.issueToken(INSTANCE_ID, 'wrong-secret') })).status, 401);
+  assert.strictEqual(mockState.embedCalls.length, 0);
 });
 
 test('step 4: saving pushes embedded-script parameters to wix', async () => {
@@ -155,6 +176,7 @@ test('step 4: saving pushes embedded-script parameters to wix', async () => {
     botId: `window.ConferbotWidget("${DEMO_ID}", "live_chat")`,
     enabled: '1',
     embedType: 'live_chat',
+    token: formToken,
   });
   const res = await fetch(`${appUrl}/app/save`, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, redirect: 'manual',
@@ -163,6 +185,31 @@ test('step 4: saving pushes embedded-script parameters to wix', async () => {
   assert.deepStrictEqual(mockState.embedCalls.at(-1), {
     properties: { parameters: { botId: DEMO_ID, embedType: 'live_chat' } },
   });
+});
+
+test('step 4b: an expired access token is refreshed and the save goes through', async () => {
+  mockState.validToken = 'wix-mock-token-2'; // the stored token no longer works
+  const body = new URLSearchParams({ instanceId: INSTANCE_ID, botId: DEMO_ID, enabled: '1', embedType: 'popup_chat', token: formToken });
+  const res = await fetch(`${appUrl}/app/save`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, redirect: 'manual',
+  });
+  assert.strictEqual(res.status, 302);
+  assert.strictEqual(mockState.tokenRequests.at(-1).grant_type, 'refresh_token');
+  assert.strictEqual(mockState.tokenRequests.at(-1).refresh_token, 'wix-mock-refresh');
+  assert.deepStrictEqual(mockState.embedCalls.at(-1), { properties: { parameters: { botId: DEMO_ID, embedType: 'popup_chat' } } });
+  // back to the live-chat embed the next steps expect
+  const again = new URLSearchParams({ instanceId: INSTANCE_ID, botId: DEMO_ID, enabled: '1', embedType: 'live_chat', token: formToken });
+  await fetch(`${appUrl}/app/save`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: again, redirect: 'manual' });
+});
+
+test('step 4c: the dev-center template does nothing while the chat is off', () => {
+  const tpl = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'embedded-script.html'), 'utf8');
+  const off = tpl.replace(/\{\{botId\}\}/g, '').replace(/\{\{embedType\}\}/g, 'live_chat');
+  const js = off.match(/<script[^>]*>([\s\S]*)<\/script>/)[1];
+  let created = 0;
+  const doc = { getElementById: () => null, getElementsByTagName: () => [], createElement: () => { created += 1; return {}; }, head: { appendChild() {} } };
+  new Function('document', js)(doc);
+  assert.strictEqual(created, 0);
 });
 
 test('step 5: preview endpoint serves the rendered embedded script', async () => {
