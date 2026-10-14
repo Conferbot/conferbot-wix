@@ -5,6 +5,7 @@ const wix = require('./wix');
 const ShopStore = require('./store');
 const { extractBotId, isValidBotId, buildEmbeddedScriptHtml } = require('./widgetScript');
 const { renderAdminPage } = require('./adminPage');
+const session = require('./session');
 
 const INSTANCE_RE = /^[a-zA-Z0-9-]+$/;
 
@@ -55,7 +56,8 @@ function createApp(cfg) {
         refreshToken: tokens.refresh_token || '',
         enabled: existing ? existing.enabled : false,
       });
-      res.redirect(`/app?instanceId=${encodeURIComponent(instanceId)}`);
+      const pageToken = session.issueToken(instanceId, cfg.appSecret, 10 * 60 * 1000);
+      res.redirect(`/app?instanceId=${encodeURIComponent(instanceId)}&session=${encodeURIComponent(pageToken)}`);
     } catch (e) {
       res.status(502).send('Installation failed: ' + e.message);
     }
@@ -64,24 +66,32 @@ function createApp(cfg) {
   // ---- Settings page (in production opened in the Wix admin with ?instance=) -----
 
   app.get('/app', (req, res) => {
-    // Accept either a signed instance token (production) or a bare
-    // instanceId (draft/dev usage, like the other Conferbot apps).
+    // Only the site's own admin: Wix's signed instance token, or the
+    // short-lived token from the install. A bare ?instanceId= let anyone
+    // open or save any site's settings.
     let instanceId = String(req.query.instanceId || '');
-    if (!instanceId && req.query.instance) {
+    let allowed = false;
+    if (req.query.instance) {
       const payload = wix.verifyInstance(req.query.instance, cfg.appSecret);
       if (!payload) {
         return res.status(403).send('Invalid instance token');
       }
       instanceId = String(payload.instanceId || '');
+      allowed = true;
     }
     if (!INSTANCE_RE.test(instanceId)) {
       return res.status(400).send('Missing or invalid instance');
+    }
+    allowed = allowed || session.verifyToken(String(req.query.session || ''), instanceId, cfg.appSecret);
+    if (!store.get(instanceId) || !allowed) {
+      return res.status(401).send('Open Conferbot from your Wix dashboard (Apps > Manage Apps).');
     }
     res.send(renderAdminPage({
       instanceId,
       record: store.get(instanceId),
       demoBotId: cfg.demoBotId,
       saved: req.query.saved === '1',
+      formToken: session.issueToken(instanceId, cfg.appSecret),
     }));
   });
 
@@ -90,6 +100,10 @@ function createApp(cfg) {
     if (!INSTANCE_RE.test(instanceId)) {
       return res.status(400).send('Missing or invalid instanceId');
     }
+    const formToken = String(req.body.token || '');
+    if (!store.get(instanceId) || !session.verifyToken(formToken, instanceId, cfg.appSecret)) {
+      return res.status(401).send('This settings page has expired. Open Conferbot from your Wix dashboard again.');
+    }
     const botId = extractBotId(req.body.botId);
     const enabled = req.body.enabled === '1' && isValidBotId(botId);
     const embedType = req.body.embedType === 'popup_chat' ? 'popup_chat' : 'live_chat';
@@ -97,17 +111,22 @@ function createApp(cfg) {
 
     // Push parameters into the site's embedded script when we have a token.
     if (record.accessToken) {
+      const parameters = { botId: enabled ? botId : '', embedType };
       try {
-        await wix.embedScript({
-          accessToken: record.accessToken,
-          parameters: { botId: enabled ? botId : '', embedType },
-          cfg,
-        });
+        try {
+          await wix.embedScript({ accessToken: record.accessToken, parameters, cfg });
+        } catch (e) {
+          // Wix access tokens are short-lived: refresh once and retry.
+          if (e.status !== 401 || !record.refreshToken) throw e;
+          const tokens = await wix.refreshTokens({ refreshToken: record.refreshToken, cfg });
+          store.upsert(instanceId, { accessToken: tokens.access_token, refreshToken: tokens.refresh_token || record.refreshToken });
+          await wix.embedScript({ accessToken: tokens.access_token, parameters, cfg });
+        }
       } catch (e) {
         return res.status(502).send('Saved locally but Wix rejected the embed update: ' + e.message);
       }
     }
-    res.redirect(`/app?instanceId=${encodeURIComponent(instanceId)}&saved=1`);
+    res.redirect(`/app?instanceId=${encodeURIComponent(instanceId)}&session=${encodeURIComponent(formToken)}&saved=1`);
   });
 
   // ---- Preview of the embedded script (production equivalent lives in the
