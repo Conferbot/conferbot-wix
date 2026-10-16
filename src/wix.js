@@ -74,6 +74,25 @@ async function refreshTokens({ refreshToken, cfg }) {
 }
 
 /**
+ * The instance an access token belongs to (GET /apps/v1/instance). The
+ * install callback uses it instead of trusting the instanceId in the URL.
+ */
+async function getInstanceId({ accessToken, cfg }) {
+  const res = await fetch(`${cfg.apiBase}/apps/v1/instance`, {
+    headers: { Authorization: accessToken },
+  });
+  if (!res.ok) {
+    throw new Error(`instance lookup failed: HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  const id = data && data.instance && data.instance.instanceId;
+  if (!id) {
+    throw new Error('instance lookup returned no instanceId');
+  }
+  return String(id);
+}
+
+/**
  * Pushes the per-site embedded-script parameters (the dev-center script
  * template contains {{botId}}/{{embedType}} placeholders).
  */
@@ -94,4 +113,4 @@ async function embedScript({ accessToken, parameters, cfg }) {
   return res.json();
 }
 
-module.exports = { verifyInstance, exchangeCodeForTokens, refreshTokens, embedScript };
+module.exports = { verifyInstance, exchangeCodeForTokens, refreshTokens, getInstanceId, embedScript };
