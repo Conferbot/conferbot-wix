@@ -30,6 +30,36 @@ function verifyInstance(instance, appSecret) {
   }
 }
 
+/**
+ * Wix webhooks arrive as a JWT (RS256) signed with the app's key; the public
+ * key is in the Dev Center (Webhooks > Public key). The JWT payload's `data`
+ * is a JSON string: { eventType, instanceId, data, identity }.
+ * Returns that parsed object, or null when the signature, algorithm or
+ * expiry is wrong.
+ */
+function verifyWebhookJwt(jwt, publicKey, now = Date.now()) {
+  if (!publicKey) return null;
+  const parts = String(jwt || '').trim().split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    if (header.alg !== 'RS256') return null;
+    const ok = crypto.verify(
+      'RSA-SHA256',
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      publicKey,
+      Buffer.from(parts[2], 'base64url'),
+    );
+    if (!ok) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (payload.exp && payload.exp * 1000 < now) return null;
+    const outer = typeof payload.data === 'string' ? JSON.parse(payload.data) : payload.data;
+    return outer && typeof outer === 'object' ? outer : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function exchangeCodeForTokens({ code, cfg }) {
   const res = await fetch(`${cfg.apiBase}/oauth/access`, {
     method: 'POST',
@@ -113,4 +143,4 @@ async function embedScript({ accessToken, parameters, cfg }) {
   return res.json();
 }
 
-module.exports = { verifyInstance, exchangeCodeForTokens, refreshTokens, getInstanceId, embedScript };
+module.exports = { verifyInstance, verifyWebhookJwt, exchangeCodeForTokens, refreshTokens, getInstanceId, embedScript };
