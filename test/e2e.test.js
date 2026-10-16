@@ -23,6 +23,7 @@ const INSTANCE_ID = 'demo-instance-1';
 const APP_ID = 'test-wix-app-id';
 const APP_SECRET = 'test-wix-app-secret';
 const DEMO_ID = '691c970890527a0468f9b2c9';
+const WEBHOOK_KEYS = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 
 let mockWix;
 let appServer;
@@ -76,6 +77,7 @@ before(async () => {
     appUrl: '',
     appId: APP_ID,
     appSecret: APP_SECRET,
+    webhookPublicKey: WEBHOOK_KEYS.publicKey.export({ type: 'spki', format: 'pem' }),
     installerBase: `http://localhost:${mockWix.address().port}`,
     apiBase: `http://localhost:${mockWix.address().port}`,
     widgetScriptUrl: 'https://cdn.conferbot.com/dist/v1/widget.min.js',
@@ -266,4 +268,34 @@ test('step 6: real browser - widget mounts on a wix-like page', { skip: process.
     await browser.close();
     await new Promise((r) => site.close(r));
   }
+});
+
+// ---- webhooks (last: App Removed deletes the site) ----------------------------
+
+function wixJwt(event, key = WEBHOOK_KEYS.privateKey, alg = 'RS256') {
+  const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const head = enc({ alg, typ: 'JWT' });
+  const body = enc({ data: JSON.stringify(event), iat: Math.floor(Date.now() / 1000) });
+  const sig = crypto.sign('RSA-SHA256', Buffer.from(`${head}.${body}`), key).toString('base64url');
+  return `${head}.${body}.${sig}`;
+}
+
+const postHook = (jwt) => fetch(`${appUrl}/webhooks`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: jwt });
+
+test('webhooks: unsigned, wrongly signed or non-RS256 events are refused', async () => {
+  const other = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+  const removed = { eventType: 'AppRemoved', instanceId: INSTANCE_ID, data: '{}' };
+  assert.strictEqual((await postHook('not-a-jwt')).status, 401);
+  assert.strictEqual((await postHook(wixJwt(removed, other))).status, 401);
+  assert.strictEqual((await postHook(wixJwt(removed, WEBHOOK_KEYS.privateKey, 'none'))).status, 401);
+  const html = await (await fetch(`${appUrl}/preview/embedded-script.js?instanceId=${INSTANCE_ID}`)).text();
+  assert.ok(html.includes(DEMO_ID));
+});
+
+test('webhooks: App Removed deletes the site record and its tokens', async () => {
+  assert.strictEqual((await postHook(wixJwt({ eventType: 'AppRemoved', instanceId: INSTANCE_ID, data: '{}' }))).status, 200);
+  const html = await (await fetch(`${appUrl}/preview/embedded-script.js?instanceId=${INSTANCE_ID}`)).text();
+  assert.match(html, /not configured/);
+  const token = makeInstanceToken({ instanceId: INSTANCE_ID, signDate: new Date().toISOString() }, APP_SECRET);
+  assert.strictEqual((await fetch(`${appUrl}/app?instance=${encodeURIComponent(token)}`)).status, 401);
 });
