@@ -50,6 +50,11 @@ before(async () => {
         }
         return res.end(JSON.stringify({ access_token: 'wix-mock-token', refresh_token: 'wix-mock-refresh' }));
       }
+      if (req.method === 'GET' && url.pathname === '/apps/v1/instance') {
+        res.setHeader('Content-Type', 'application/json');
+        // every token the mock hands out belongs to INSTANCE_ID's site
+        return res.end(JSON.stringify({ instance: { instanceId: INSTANCE_ID, appName: 'Conferbot' } }));
+      }
       if (req.method === 'POST' && url.pathname === '/apps/v1/scripts') {
         if (req.headers.authorization !== mockState.validToken) {
           res.statusCode = 401;
@@ -124,15 +129,31 @@ test('step 1: /auth/start bounces to the wix installer with app id and redirect'
   assert.strictEqual(loc.searchParams.get('token'), 'install-token-9');
   assert.strictEqual(loc.searchParams.get('appId'), APP_ID);
   assert.strictEqual(loc.searchParams.get('redirectUrl'), `${appUrl}/auth/callback`);
+  installState = loc.searchParams.get('state');
+  assert.ok(installState && installState.includes('~'));
 });
 
-test('step 2: callback exchanges the code and stores tokens', async () => {
-  const res = await fetch(`${appUrl}/auth/callback?code=grant-7&instanceId=${INSTANCE_ID}`, { redirect: 'manual' });
+let installState;
+
+test('step 2: callback exchanges the code, checks the instance and closes the installer', async () => {
+  const res = await fetch(`${appUrl}/auth/callback?code=grant-7&instanceId=${INSTANCE_ID}&state=${encodeURIComponent(installState)}`, { redirect: 'manual' });
   assert.strictEqual(res.status, 302);
-  assert.ok(res.headers.get('location').startsWith(`/app?instanceId=${INSTANCE_ID}&session=`));
+  const loc = new URL(res.headers.get('location'));
+  assert.strictEqual(loc.pathname, '/installer/close-window');
+  assert.strictEqual(loc.searchParams.get('access_token'), 'wix-mock-token');
   assert.deepStrictEqual(mockState.tokenRequests[0], {
     grant_type: 'authorization_code', client_id: APP_ID, client_secret: APP_SECRET, code: 'grant-7',
   });
+});
+
+test('step 2a: callback refuses a forged state or a code for another site', async () => {
+  const st = encodeURIComponent(installState);
+  assert.strictEqual((await fetch(`${appUrl}/auth/callback?code=x&instanceId=${INSTANCE_ID}`, { redirect: 'manual' })).status, 403);
+  assert.strictEqual((await fetch(`${appUrl}/auth/callback?code=x&instanceId=${INSTANCE_ID}&state=abc~def.0`, { redirect: 'manual' })).status, 403);
+  // the mock's tokens belong to INSTANCE_ID, so claiming another site fails
+  const before = mockState.tokenRequests.length;
+  assert.strictEqual((await fetch(`${appUrl}/auth/callback?code=x&instanceId=victim-site&state=${st}`, { redirect: 'manual' })).status, 403);
+  assert.strictEqual(mockState.tokenRequests.length, before + 1);
 });
 
 test('step 2b: callback rejects missing code or bad instance id', async () => {
