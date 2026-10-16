@@ -106,14 +106,20 @@ function createApp(cfg) {
 
   // ---- Settings page (in production opened in the Wix admin with ?instance=) -----
 
-  app.get('/app', (req, res) => {
+  // Settings may only be framed by the Wix dashboard (no clickjacking).
+  const frameGuard = (req, res, next) => {
+    res.set('Content-Security-Policy', 'frame-ancestors https://*.wix.com;');
+    next();
+  };
+
+  app.get('/app', frameGuard, (req, res) => {
     // Only the site's own admin: Wix's signed instance token, or the
     // short-lived token from the install. A bare ?instanceId= let anyone
     // open or save any site's settings.
     let instanceId = String(req.query.instanceId || '');
     let allowed = false;
     if (req.query.instance) {
-      const payload = wix.verifyInstance(req.query.instance, cfg.appSecret);
+      const payload = wix.verifyInstance(req.query.instance, cfg.appSecret, { appId: cfg.appId });
       if (!payload) {
         return res.status(403).send('Invalid instance token');
       }
@@ -136,7 +142,7 @@ function createApp(cfg) {
     }));
   });
 
-  app.post('/app/save', async (req, res) => {
+  app.post('/app/save', frameGuard, async (req, res) => {
     const instanceId = String(req.body.instanceId || '');
     if (!INSTANCE_RE.test(instanceId)) {
       return res.status(400).send('Missing or invalid instanceId');
