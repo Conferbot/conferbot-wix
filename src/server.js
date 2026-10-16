@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const express = require('express');
 const wix = require('./wix');
 const ShopStore = require('./store');
@@ -22,6 +23,19 @@ function createApp(cfg) {
   const app = express();
   const store = new ShopStore(cfg.dataFile);
 
+  // OAuth state: "<nonce>~<token signed for install-<nonce>, 10 minutes>".
+  // Stateless, so it survives restarts and needs no server-side map.
+  const STATE_TTL_MS = 10 * 60 * 1000;
+  const issueState = () => {
+    const nonce = crypto.randomBytes(16).toString('hex');
+    return `${nonce}~${session.issueToken(`install-${nonce}`, cfg.appSecret, STATE_TTL_MS)}`;
+  };
+  const verifyState = (state) => {
+    const s = String(state || '');
+    const cut = s.indexOf('~');
+    return cut > 0 && session.verifyToken(s.slice(cut + 1), `install-${s.slice(0, cut)}`, cfg.appSecret);
+  };
+
   app.use(express.urlencoded({ extended: false }));
 
   app.get('/healthz', (req, res) => res.json({ ok: true }));
@@ -39,25 +53,38 @@ function createApp(cfg) {
       token,
       appId: cfg.appId,
       redirectUrl: `${cfg.appUrl}/auth/callback`,
+      state: issueState(),
     });
     res.redirect(`${cfg.installerBase}/installer/install?${params}`);
   });
 
   app.get('/auth/callback', async (req, res) => {
     try {
-      const { code, instanceId } = req.query;
+      const { code, instanceId, state } = req.query;
       if (!code || !INSTANCE_RE.test(String(instanceId || ''))) {
         return res.status(400).send('Missing code or invalid instanceId');
       }
+      if (!verifyState(state)) {
+        return res.status(403).send('Invalid OAuth state');
+      }
       const tokens = await wix.exchangeCodeForTokens({ code, cfg });
-      const existing = store.get(instanceId);
-      store.upsert(instanceId, {
+      // The tokens decide which site this is, not the URL: a code from one
+      // site must never land on another site's record.
+      const realInstanceId = await wix.getInstanceId({ accessToken: tokens.access_token, cfg });
+      if (realInstanceId !== String(instanceId)) {
+        return res.status(403).send('Instance mismatch');
+      }
+      const existing = store.get(realInstanceId);
+      store.upsert(realInstanceId, {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || '',
         enabled: existing ? existing.enabled : false,
       });
-      const pageToken = session.issueToken(instanceId, cfg.appSecret, 10 * 60 * 1000);
-      res.redirect(`/app?instanceId=${encodeURIComponent(instanceId)}&session=${encodeURIComponent(pageToken)}`);
+      // Wix requires the install to end on its close-window URL; the
+      // merchant then opens the settings from the Wix dashboard (signed
+      // ?instance=).
+      const close = new URLSearchParams({ access_token: tokens.access_token });
+      res.redirect(`${cfg.installerBase}/installer/close-window?${close}`);
     } catch (e) {
       res.status(502).send('Installation failed: ' + e.message);
     }
