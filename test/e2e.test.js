@@ -98,10 +98,17 @@ after(async () => {
 
 // ---- helpers -------------------------------------------------------------------
 
-test('instance token verification accepts valid, rejects tampered/malformed', () => {
-  const good = makeInstanceToken({ instanceId: INSTANCE_ID }, APP_SECRET);
-  assert.strictEqual(wixHelpers.verifyInstance(good, APP_SECRET).instanceId, INSTANCE_ID);
-  const wrongSecret = makeInstanceToken({ instanceId: INSTANCE_ID }, 'other');
+test('instance token verification accepts valid, rejects tampered/malformed/stale', () => {
+  const now = new Date().toISOString();
+  const good = makeInstanceToken({ instanceId: INSTANCE_ID, signDate: now, appDefId: APP_ID }, APP_SECRET);
+  assert.strictEqual(wixHelpers.verifyInstance(good, APP_SECRET, { appId: APP_ID }).instanceId, INSTANCE_ID);
+  const stale = makeInstanceToken({ instanceId: INSTANCE_ID, signDate: '2024-01-01T00:00:00Z' }, APP_SECRET);
+  assert.strictEqual(wixHelpers.verifyInstance(stale, APP_SECRET), null);
+  const undated = makeInstanceToken({ instanceId: INSTANCE_ID }, APP_SECRET);
+  assert.strictEqual(wixHelpers.verifyInstance(undated, APP_SECRET), null);
+  const otherApp = makeInstanceToken({ instanceId: INSTANCE_ID, signDate: now, appDefId: 'other-app' }, APP_SECRET);
+  assert.strictEqual(wixHelpers.verifyInstance(otherApp, APP_SECRET, { appId: APP_ID }), null);
+  const wrongSecret = makeInstanceToken({ instanceId: INSTANCE_ID, signDate: now }, 'other');
   assert.strictEqual(wixHelpers.verifyInstance(wrongSecret, APP_SECRET), null);
   assert.strictEqual(wixHelpers.verifyInstance('nodots', APP_SECRET), null);
   assert.strictEqual(wixHelpers.verifyInstance('', APP_SECRET), null);
@@ -166,9 +173,10 @@ test('step 2b: callback rejects missing code or bad instance id', async () => {
 let formToken; // the settings page's signed form token
 
 test('step 3: settings page opens only via the signed instance token', async () => {
-  const token = makeInstanceToken({ instanceId: INSTANCE_ID }, APP_SECRET);
+  const token = makeInstanceToken({ instanceId: INSTANCE_ID, signDate: new Date().toISOString(), appDefId: APP_ID }, APP_SECRET);
   const signed = await fetch(`${appUrl}/app?instance=${encodeURIComponent(token)}`);
   assert.strictEqual(signed.status, 200);
+  assert.strictEqual(signed.headers.get('content-security-policy'), 'frame-ancestors https://*.wix.com;');
   const html = await signed.text();
   assert.ok(html.includes('Paste your Chatbot ID'));
   assert.ok(html.includes(`data-demo-id="${DEMO_ID}"`));
