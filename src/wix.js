@@ -9,9 +9,11 @@ const crypto = require('crypto');
  * settings iframe receives a signed `instance` token:
  *   "<base64url signature>.<base64url json payload>"
  * where the signature is HMAC-SHA256 of the payload part with the app secret.
+ * The payload's signDate must be within a day and its appDefId (when set)
+ * must be this app.
  */
 
-function verifyInstance(instance, appSecret) {
+function verifyInstance(instance, appSecret, { appId = '', now = Date.now(), maxAgeMs = 24 * 60 * 60 * 1000 } = {}) {
   const parts = String(instance || '').split('.');
   if (parts.length !== 2) {
     return null;
@@ -23,11 +25,22 @@ function verifyInstance(instance, appSecret) {
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
     return null;
   }
+  let payload;
   try {
-    return JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
   } catch (e) {
     return null;
   }
+  // Wix signs a fresh instance on every dashboard load: an old one (from a
+  // log, a shared link, browser history) must not open the settings forever.
+  const signed = Date.parse(payload && payload.signDate);
+  if (!Number.isFinite(signed) || Math.abs(now - signed) > maxAgeMs) {
+    return null;
+  }
+  if (appId && payload.appDefId && payload.appDefId !== appId) {
+    return null;
+  }
+  return payload;
 }
 
 /**
