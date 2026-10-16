@@ -90,6 +90,20 @@ function createApp(cfg) {
     }
   });
 
+  // ---- Webhooks: App Removed drops the site's record and tokens ----------------
+
+  app.post('/webhooks', express.text({ type: '*/*', limit: '1mb' }), (req, res) => {
+    const event = wix.verifyWebhookJwt(req.body, cfg.webhookPublicKey);
+    if (!event) {
+      return res.status(401).send('Invalid webhook signature');
+    }
+    const instanceId = String(event.instanceId || '');
+    if (/^(AppRemoved|app_removed)$/i.test(String(event.eventType || '')) && INSTANCE_RE.test(instanceId)) {
+      store.remove(instanceId);
+    }
+    res.status(200).send('ok');
+  });
+
   // ---- Settings page (in production opened in the Wix admin with ?instance=) -----
 
   app.get('/app', (req, res) => {
