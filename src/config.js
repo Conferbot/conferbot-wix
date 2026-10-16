@@ -9,6 +9,8 @@ module.exports = {
   appUrl: process.env.APP_URL || 'http://localhost:3059',
   appId: process.env.WIX_APP_ID || '',
   appSecret: process.env.WIX_APP_SECRET || '',
+  // Dev Center > Webhooks > Public key (PEM; "\n" escapes are accepted).
+  webhookPublicKey: (process.env.WIX_PUBLIC_KEY || '').replace(/\\n/g, '\n'),
   installerBase: process.env.WIX_INSTALLER_BASE || 'https://www.wix.com',
   apiBase: process.env.WIX_API_BASE || 'https://www.wixapis.com',
   widgetScriptUrl: process.env.CONFERBOT_WIDGET_URL || 'https://cdn.conferbot.com/dist/v1/widget.min.js',
