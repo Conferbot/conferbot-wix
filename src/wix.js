@@ -5,6 +5,12 @@ const crypto = require('crypto');
 /**
  * Wix OAuth + API helpers.
  *
+ * Authentication is Wix OAuth (client credentials): the app ID, the app
+ * secret and the site's instanceId give an access token. The instanceId
+ * comes from the App Instance Installed webhook or the signed `instance`
+ * parameter of the dashboard page; there is no installer redirect, no
+ * authorization code and no refresh token.
+ *
  * Wix identity: the app instance ID (one per site installation). The
  * settings iframe receives a signed `instance` token:
  *   "<base64url signature>.<base64url json payload>"
@@ -73,66 +79,60 @@ function verifyWebhookJwt(jwt, publicKey, now = Date.now()) {
   }
 }
 
-async function exchangeCodeForTokens({ code, cfg }) {
-  const res = await fetch(`${cfg.apiBase}/oauth/access`, {
+/**
+ * OAuth (client credentials): an access token for one app instance, from
+ * POST {apiBase}/oauth2/token. Wix returns no refresh token; a new token is
+ * created whenever one is needed. Tokens are valid for 4 hours.
+ * https://dev.wix.com/docs/build-apps/develop-your-app/auth/authenticate-using-oauth
+ */
+async function createAccessToken({ instanceId, cfg }) {
+  const res = await fetch(`${cfg.apiBase}/oauth2/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      grant_type: 'authorization_code',
+      grant_type: 'client_credentials',
       client_id: cfg.appId,
       client_secret: cfg.appSecret,
-      code,
+      instance_id: instanceId,
     }),
   });
   if (!res.ok) {
-    throw new Error(`token exchange failed: HTTP ${res.status}`);
+    const err = new Error(`access token request failed: HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   const data = await res.json();
   if (!data.access_token) {
-    throw new Error('token exchange returned no access_token');
+    throw new Error('access token response had no access_token');
   }
-  return data;
-}
-
-/** A fresh access token from the refresh token (Wix access tokens last minutes). */
-async function refreshTokens({ refreshToken, cfg }) {
-  const res = await fetch(`${cfg.apiBase}/oauth/access`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      grant_type: 'refresh_token',
-      client_id: cfg.appId,
-      client_secret: cfg.appSecret,
-      refresh_token: refreshToken,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`token refresh failed: HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  if (!data.access_token) {
-    throw new Error('token refresh returned no access_token');
-  }
-  return data;
+  const seconds = Number(data.expires_in);
+  return {
+    accessToken: String(data.access_token),
+    expiresInMs: (Number.isFinite(seconds) && seconds > 0 ? seconds : 4 * 60 * 60) * 1000,
+  };
 }
 
 /**
- * The instance an access token belongs to (GET /apps/v1/instance). The
- * install callback uses it instead of trusting the instanceId in the URL.
+ * Per-instance access tokens, kept in memory only (nothing to store or leak
+ * on disk) and reused until five minutes before they expire.
  */
-async function getInstanceId({ accessToken, cfg }) {
-  const res = await fetch(`${cfg.apiBase}/apps/v1/instance`, {
-    headers: { Authorization: accessToken },
-  });
-  if (!res.ok) {
-    throw new Error(`instance lookup failed: HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  const id = data && data.instance && data.instance.instanceId;
-  if (!id) {
-    throw new Error('instance lookup returned no instanceId');
-  }
-  return String(id);
+function createTokenCache(cfg, { now = () => Date.now(), request = createAccessToken } = {}) {
+  const tokens = new Map();
+  const MARGIN_MS = 5 * 60 * 1000;
+  return {
+    async get(instanceId) {
+      const hit = tokens.get(instanceId);
+      if (hit && hit.expiresAt - MARGIN_MS > now()) {
+        return hit.accessToken;
+      }
+      const { accessToken, expiresInMs } = await request({ instanceId, cfg });
+      tokens.set(instanceId, { accessToken, expiresAt: now() + expiresInMs });
+      return accessToken;
+    },
+    drop(instanceId) {
+      tokens.delete(instanceId);
+    },
+  };
 }
 
 /**
@@ -156,4 +156,4 @@ async function embedScript({ accessToken, parameters, cfg }) {
   return res.json();
 }
 
-module.exports = { verifyInstance, verifyWebhookJwt, exchangeCodeForTokens, refreshTokens, getInstanceId, embedScript };
+module.exports = { verifyInstance, verifyWebhookJwt, createAccessToken, createTokenCache, embedScript };
