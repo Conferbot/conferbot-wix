@@ -4,8 +4,9 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Tiny JSON-file store for per-shop state: { [shopDomain]: { accessToken,
- * botId, enabled, scriptTagId } }. Deliberately dependency-free; swap for
+ * Tiny JSON-file store for per-site state: { [instanceId]: { botId, enabled,
+ * embedType } }. No Wix tokens: they are created on demand (OAuth client
+ * credentials) and kept in memory. Deliberately dependency-free; swap for
  * Redis/Postgres behind the same four functions when going multi-instance.
  */
 class ShopStore {
