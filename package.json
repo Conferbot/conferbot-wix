@@ -1,6 +1,6 @@
 {
   "name": "conferbot-wix",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Conferbot - AI Chatbot, Live Chat & Customer Support for Wix. Installs the Conferbot widget via a Wix embedded script.",
   "main": "src/index.js",
   "scripts": {
